@@ -1,10 +1,23 @@
 
 # environment
 .venv/
+.uv-bin/
 
 __pycache__/
 
 # data
 *.onnx
 
+# model outputs
+chess_model/
+gpt_chess/chess_model/
+models/
+eval_results/
+*.gguf
+outputs/
+wandb/
+
 .env
+
+# for Macs 
+.DS_Store
