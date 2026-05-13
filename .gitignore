@@ -1,6 +1,7 @@
 
 # environment
 .venv/
+.uv-bin/
 
 __pycache__/
 
@@ -10,6 +11,9 @@ __pycache__/
 # model outputs
 chess_model/
 gpt_chess/chess_model/
+models/
+eval_results/
+*.gguf
 outputs/
 wandb/
 
