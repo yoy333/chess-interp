@@ -21,6 +21,7 @@ COMMENT_RE = re.compile(r"\{[^{}]*\}")
 VARIATION_RE = re.compile(r"\([^()]*\)")
 NAG_RE = re.compile(r"\$\d+")
 RESULT_RE = re.compile(r"(1-0|0-1|1/2-1/2|\*)\s*$")
+MOVE_RESULT_RE = re.compile(r"\b(1-0|0-1|1/2-1/2|\*)\s*$")
 
 
 def clean_movetext(text: str) -> str:
@@ -46,6 +47,20 @@ def read_game(text: str) -> chess.pgn.Game | None:
     if not movetext.startswith("1."):
         return None
     return chess.pgn.read_game(io.StringIO(movetext))
+
+
+def iter_game_texts(lines: Iterable[str]) -> Iterable[str]:
+    """Reconstruct full PGN games from line-oriented dataset rows."""
+
+    current_game: list[str] = []
+    for raw_line in lines:
+        line = raw_line.rstrip()
+        if line or current_game:
+            current_game.append(line)
+
+        if MOVE_RESULT_RE.search(line):
+            yield "\n".join(current_game)
+            current_game = []
 
 
 def expanded_board(board: chess.Board, *, expected_tokens: int = 71) -> str:
@@ -157,9 +172,15 @@ def tokenize_dataset(
 ) -> "Dataset":
     """Convert a raw PGN dataset into model-ready supervised examples."""
 
-    return dataset.map(
-        lambda batch: extract_chess_examples(batch, mapper=mapper, config=config),
-        batched=True,
-        remove_columns=dataset.column_names,
-    )
+    from datasets import Dataset
+
+    examples: list[dict[str, list[int]]] = []
+    game_texts = iter_game_texts(row[config.text_column] for row in dataset)
+    for game_text in game_texts:
+        game = read_game(game_text)
+        if game is None:
+            continue
+        examples.extend(iter_game_examples(game, mapper, config))
+
+    return Dataset.from_list(examples)
 

@@ -54,12 +54,33 @@ class TrainerConfig:
 
 
 @dataclass(frozen=True)
+class GGUFConfig:
+    """Config for local llama.cpp GGUF inference.
+
+    The default points at Unsloth's Qwen3.5 9B Q4_0 GGUF. Swap ``repo_id`` and
+    ``filename`` for any other Unsloth GGUF that fits in local RAM/VRAM.
+    """
+
+    repo_id: str = "unsloth/Qwen3.5-9B-GGUF"
+    filename: str = "Qwen3.5-9B-Q4_0.gguf"
+    local_dir: str = "models/gguf"
+    n_ctx: int = 2048
+    n_gpu_layers: int = 0
+    n_threads: int | None = None
+    temperature: float = 0.0
+    top_p: float = 1.0
+    max_tokens: int = 16
+    use_chat_template: bool = True
+
+
+@dataclass(frozen=True)
 class ExperimentConfig:
     """Top-level config used by scripts."""
 
     model: ModelConfig = field(default_factory=ModelConfig)
     data: DataConfig = field(default_factory=DataConfig)
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
+    gguf: GGUFConfig = field(default_factory=GGUFConfig)
 
 
 DEFAULT_CONFIG = ExperimentConfig()

@@ -65,13 +65,24 @@ def choose_best_legal_uci(
 ) -> str:
     """Score every legal UCI move and return the model's best choice."""
 
+    return score_legal_uci_moves(model, mapper, board, data_config)[0][1]
+
+
+def score_legal_uci_moves(
+    model: "PreTrainedModel",
+    mapper: DirectTokenMapper,
+    board: chess.Board,
+    data_config: DataConfig = DataConfig(),
+) -> list[tuple[float, str]]:
+    """Return legal UCI moves sorted by model continuation log-probability."""
+
     prompt = format_prompt(board, data_config)
     scored_moves = [
         (continuation_logprob(model, mapper, prompt, f"{move.uci()}\n"), move.uci())
         for move in board.legal_moves
     ]
     scored_moves.sort(key=lambda pair: pair[0], reverse=True)
-    return scored_moves[0][1]
+    return scored_moves
 
 
 def generate_valid_game(

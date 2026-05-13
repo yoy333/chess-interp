@@ -13,6 +13,14 @@ if TYPE_CHECKING:
     from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 
+def resize_embeddings_if_needed(model: Any, tokenizer: Any) -> None:
+    """Match model embeddings to tokenizer size after adding chess tokens."""
+
+    current_size = model.get_input_embeddings().num_embeddings
+    if current_size != len(tokenizer):
+        model.resize_token_embeddings(len(tokenizer))
+
+
 def load_base_model_and_tokenizer(
     config: ModelConfig,
 ) -> tuple["PreTrainedModel", "PreTrainedTokenizerBase", DirectTokenMapper]:
@@ -21,7 +29,7 @@ def load_base_model_and_tokenizer(
     import torch
     from transformers import AutoModelForCausalLM
 
-    tokenizer, added_tokens = load_tokenizer(config.model_id)
+    tokenizer, _ = load_tokenizer(config.model_id)
 
     model_kwargs: dict[str, object] = {}
     if config.device_map is not None:
@@ -30,8 +38,7 @@ def load_base_model_and_tokenizer(
         model_kwargs["torch_dtype"] = torch.float16
 
     model = AutoModelForCausalLM.from_pretrained(config.model_id, **model_kwargs)
-    if added_tokens > 0:
-        model.resize_token_embeddings(len(tokenizer))
+    resize_embeddings_if_needed(model, tokenizer)
 
     model.config.pad_token_id = tokenizer.pad_token_id
     mapper = DirectTokenMapper.from_tokenizer(tokenizer)
@@ -107,11 +114,10 @@ def load_adapter_model(
 
     peft_config = PeftConfig.from_pretrained(adapter_dir)
     base_model_id = peft_config.base_model_name_or_path or fallback_model_id
-    tokenizer, added_tokens = load_tokenizer_for_adapter(base_model_id, adapter_dir)
+    tokenizer, _ = load_tokenizer_for_adapter(base_model_id, adapter_dir)
 
     model = AutoModelForCausalLM.from_pretrained(base_model_id)
-    if added_tokens > 0:
-        model.resize_token_embeddings(len(tokenizer))
+    resize_embeddings_if_needed(model, tokenizer)
     model.config.pad_token_id = tokenizer.pad_token_id
 
     model = PeftModel.from_pretrained(model, adapter_dir)
