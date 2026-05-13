@@ -30,6 +30,29 @@ python scripts/play_chess_gui.py leela_pytorch_impl/leela_model_uci_bot.py --use
 ```
 - Note that you need to download "lco-original.onnx" from https://figshare.com/s/adc80845c00b67c8fce5 into leela_pytorch_impl/
 
+gpt_chess/
+
+- Fine-tune and evaluate small GPT-style chess move predictors.
+- Setup and commands are in [README_GPT.md](README_GPT.md).
+- Install `uv` if needed:
+```
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+- Quick start:
+```
+uv sync
+uv run python -m gpt_chess.smoke_test
+uv run python -m gpt_chess.evaluate --backend random --limit-positions 20
+```
+- Qwen3.5 GGUF baseline:
+```
+uv run python -m gpt_chess.evaluate \
+  --backend gguf \
+  --gguf-repo-id unsloth/Qwen3.5-9B-GGUF \
+  --gguf-filename Qwen3.5-9B-Q4_0.gguf \
+  --limit-positions 20
+```
+
 ## schedule
 
 ### Week 3: 
