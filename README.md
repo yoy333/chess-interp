@@ -130,3 +130,13 @@ For ease of development (and access to free-tier GPUs) we’ll likely use Google
 ### Week 6
 
 - NNsight: https://nnsight.net/getting-started/quickstart/
+
+### Week 8
+
+- GPT Chess: Finetuning on mutliple GPUs
+- Leela Chess: We can replicate the paper now
+  - main dataset: Chess Puzzles, corrupted chess puzzles
+  - 2.3: Activation patching: show that squares corresponding to future moves are most influential on the policy
+  - 3.2: Look for attention heads that move information across time (the paper patched attention outputs, and found the attention heads that influenced the final policy the most)
+    - we should be able to find "piece movement heads" for consequences of future moves and a head which moves information from the 3rd move target to the 1st move target
+  - 3.3: train a probe that can predict the 3rd move target square, showing that the model knows where the third move will be before the position happens.
