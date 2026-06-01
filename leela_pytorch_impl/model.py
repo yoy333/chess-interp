@@ -14,11 +14,17 @@ from forward_pass_implementation import forward as modified_forward
 from leela_board import LeelaBoard
 
 
+def _count_onnx_initializers(model):
+    """Count how many onnx_initializer_* attributes exist on the model."""
+    i = 0
+    while hasattr(model.initializers, f"onnx_initializer_{i}"):
+        i += 1
+    return i
+
+
 class Lc0Model(torch.nn.Module):
     POLICY_OUTPUT_SIZE = 1858
-    D_MODEL = 768
     N_LAYERS = 15
-    N_HEADS = 24
 
     def __init__(
         self,
@@ -61,6 +67,32 @@ class Lc0Model(torch.nn.Module):
 
         self._lc0_model = onnx2torch.convert(onnx_model)
 
+        # Auto-detect model architecture from the converted model.
+        n_initializers = _count_onnx_initializers(self._lc0_model)
+        has_smolgen = hasattr(self._lc0_model, "encoder0/smolgen/compress")
+        self._is_bt4 = has_smolgen
+
+        # Detect D_MODEL from the first encoder's Q weight shape.
+        # For BT4: encoder0/mha/Q/w has shape (D_MODEL, D_MODEL)
+        # For original: similar naming
+        q_weight_name = "encoder0/mha/Q/w"
+        if hasattr(self._lc0_model, q_weight_name):
+            q_module = getattr(self._lc0_model, q_weight_name)
+            # onnx2torch wraps weights; find the weight tensor
+            for param in q_module.parameters():
+                self.D_MODEL = param.shape[0]
+                self.N_HEADS = 32 if has_smolgen else 24
+                break
+            else:
+                self.D_MODEL = 1024 if has_smolgen else 768
+                self.N_HEADS = 32 if has_smolgen else 24
+        else:
+            self.D_MODEL = 1024 if has_smolgen else 768
+            self.N_HEADS = 32 if has_smolgen else 24
+
+        print(f"Detected model: D_MODEL={self.D_MODEL}, N_HEADS={self.N_HEADS}, "
+              f"Smolgen={has_smolgen}, Initializers={n_initializers}")
+
         # Add some modules to expose residual activations in a more reasonable shape.
         post_attention = [torch.nn.Identity() for _ in range(self.N_LAYERS)]
         post_mlp = [torch.nn.Identity() for _ in range(self.N_LAYERS)]
@@ -73,26 +105,26 @@ class Lc0Model(torch.nn.Module):
 
         self._lc0_model.to(device)
 
-        self._is_sparring = not hasattr(
-            self._lc0_model.initializers, "onnx_initializer_465"
-        )
+        # Sparring detection: original models have ~466 initializers; BT4 has 474.
+        # The old check for onnx_initializer_465 doesn't work for BT4.
+        self._is_sparring = n_initializers < 200
         self._sparring_use_history = sparring_use_history
 
         # Move all shapes to the CPU. This speeds things up because otherwise they'll
         # have to implicitly be moved there on every forward pass.
         if not self._is_sparring:
-            for i in range(466):
-                initializer = getattr(
-                    self._lc0_model.initializers, f"onnx_initializer_{i}"
-                )
+            for i in range(n_initializers):
+                try:
+                    initializer = getattr(
+                        self._lc0_model.initializers, f"onnx_initializer_{i}"
+                    )
+                except AttributeError:
+                    continue
                 if (
-                    # A bit of a hack but this detects the shapes Lc0 stores:
                     isinstance(initializer, torch.Tensor)
                     and (initializer.dtype in {torch.int64, torch.int32})
                     and (
-                        # Shapes:
                         (initializer.ndim == 1 and initializer[0].item() == -1)
-                        # Slices:
                         or initializer.shape == (1,)
                     )
                 ):
@@ -111,8 +143,11 @@ class Lc0Model(torch.nn.Module):
         """Input/output behavior should be the same no matter `original_forward`.
         The modified forward pass (default) just exposes some additional activations
         via `nn.Identity` modules.
+
+        For BT4/Smolgen models, we always use the raw onnx2torch forward pass since
+        the modified forward pass was written for the original architecture.
         """
-        if self._is_sparring or original_forward:
+        if self._is_sparring or original_forward or self._is_bt4:
             return self._lc0_model(x)
         return modified_forward(self._lc0_model, x)
 
@@ -325,6 +360,12 @@ class Lc0Model(torch.nn.Module):
         return {name: module for name, module in self.model.named_modules()}
 
     def policy_head(self, x):
+        if self._is_bt4:
+            raise NotImplementedError(
+                "policy_head uses hardcoded ONNX initializer indices specific to "
+                "the original architecture. For BT4, use the full model forward pass "
+                "and index into output[0] (policy)."
+            )
         encoder14_ln2 = rearrange(
             x, "batch squares d -> (batch squares) d", squares=64, d=self.D_MODEL
         )
@@ -479,6 +520,11 @@ class Lc0Model(torch.nn.Module):
         return output_policy
 
     def wdl_head(self, x, return_logits: bool = False):
+        if self._is_bt4:
+            raise NotImplementedError(
+                "wdl_head uses hardcoded ONNX initializer indices. "
+                "For BT4, use the full model forward pass and index into output[1] (wdl)."
+            )
         encoder14_ln2 = rearrange(
             x, "batch squares d -> (batch squares) d", squares=64, d=self.D_MODEL
         )
@@ -549,6 +595,11 @@ class Lc0Model(torch.nn.Module):
         return output_wdl
 
     def mlh_head(self, x):
+        if self._is_bt4:
+            raise NotImplementedError(
+                "mlh_head uses hardcoded ONNX initializer indices. "
+                "For BT4, use the full model forward pass and index into output[2] (mlh)."
+            )
         encoder14_ln2 = rearrange(
             x, "batch squares d -> (batch squares) d", squares=64, d=self.D_MODEL
         )

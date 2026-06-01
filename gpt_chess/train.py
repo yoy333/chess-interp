@@ -1,4 +1,6 @@
-"""Train a small causal LM to predict legal chess moves from board states."""
+"""
+Train a small causal LM to predict legal chess moves from board states.
+"""
 
 from __future__ import annotations
 

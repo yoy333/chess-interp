@@ -6,7 +6,8 @@ import os
 import argparse
 
 PATH = os.path.dirname(os.path.abspath(__file__))
-LC0_MODEL_PATH = os.path.join(PATH, "lc0-original.onnx")
+# LC0_MODEL_PATH = os.path.join(PATH, "lc0-original.onnx")
+LC0_MODEL_PATH = os.path.join(PATH, "BT4-tf13tune.onnx")
 USE_PROBABILITIES = False
 
 parser = argparse.ArgumentParser(description="Leela Chess Zero UCI Bot.")

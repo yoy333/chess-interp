@@ -7,6 +7,7 @@ __pycache__/
 
 # data
 *.onnx
+*.pb.gz
 
 # model outputs
 chess_model/
@@ -21,3 +22,5 @@ wandb/
 
 # for Macs 
 .DS_Store
+
+*.egg-info

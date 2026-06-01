@@ -13,6 +13,7 @@ dependencies = [
     "huggingface-hub>=1.12.0",
     "iceberg>=0.4",
     "ipykernel>=7.2.0",
+    "leela-pytorch-impl",
     "llama-cpp-python>=0.3.23",
     "matplotlib>=3.10.9",
     "nnsight>=0.7.0",
@@ -46,4 +47,10 @@ torch = [
 ]
 torchvision = [
     { index = "torch-cu126", marker = "sys_platform == 'linux'" },
+]
+leela-pytorch-impl = { workspace = true, editable = true }
+
+[tool.uv.workspace]
+members = [
+    "leela_pytorch_impl",
 ]

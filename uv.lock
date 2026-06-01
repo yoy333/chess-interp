@@ -20,6 +20,12 @@ resolution-markers = [
     "python_full_version < '3.14' and platform_machine == 's390x' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32'",
 ]
 
+[manifest]
+members = [
+    "chess-interp",
+    "leela-pytorch-impl",
+]
+
 [[package]]
 name = "accelerate"
 version = "1.13.0"
@@ -333,6 +339,7 @@ dependencies = [
     { name = "huggingface-hub" },
     { name = "iceberg" },
     { name = "ipykernel" },
+    { name = "leela-pytorch-impl" },
     { name = "llama-cpp-python" },
     { name = "matplotlib" },
     { name = "nnsight" },
@@ -360,6 +367,7 @@ requires-dist = [
     { name = "huggingface-hub", specifier = ">=1.12.0" },
     { name = "iceberg", specifier = ">=0.4" },
     { name = "ipykernel", specifier = ">=7.2.0" },
+    { name = "leela-pytorch-impl", editable = "leela_pytorch_impl" },
     { name = "llama-cpp-python", specifier = ">=0.3.23" },
     { name = "matplotlib", specifier = ">=3.10.9" },
     { name = "nnsight", specifier = ">=0.7.0" },
@@ -1121,6 +1129,29 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/07/18/43a5f24608d8c313dd189cf838c8e68d75b115567c6279de7796197cfb6a/kiwisolver-1.5.0-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:e7a116ae737f0000343218c4edf5bd45893bfeaff0993c0b215d7124c9f77646", size = 2394403, upload-time = "2026-03-09T13:15:31.517Z" },
     { url = "https://files.pythonhosted.org/packages/3b/b5/98222136d839b8afabcaa943b09bd05888c2d36355b7e448550211d1fca4/kiwisolver-1.5.0-cp314-cp314t-win_amd64.whl", hash = "sha256:1dd9b0b119a350976a6d781e7278ec7aca0b201e1a9e2d23d9804afecb6ca681", size = 79687, upload-time = "2026-03-09T13:15:33.204Z" },
     { url = "https://files.pythonhosted.org/packages/99/a2/ca7dc962848040befed12732dff6acae7fb3c4f6fc4272b3f6c9a30b8713/kiwisolver-1.5.0-cp314-cp314t-win_arm64.whl", hash = "sha256:58f812017cd2985c21fbffb4864d59174d4903dd66fa23815e74bbc7a0e2dd57", size = 70032, upload-time = "2026-03-09T13:15:34.411Z" },
+]
+
+[[package]]
+name = "leela-pytorch-impl"
+version = "0.1.0"
+source = { editable = "leela_pytorch_impl" }
+dependencies = [
+    { name = "chess" },
+    { name = "iceberg" },
+    { name = "numpy" },
+    { name = "pandas" },
+    { name = "torch", version = "2.11.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
+    { name = "torch", version = "2.11.0+cu126", source = { registry = "https://download.pytorch.org/whl/cu126" }, marker = "sys_platform == 'linux'" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "chess", specifier = ">=1.11" },
+    { name = "iceberg", specifier = ">=0.4" },
+    { name = "numpy" },
+    { name = "pandas" },
+    { name = "torch", marker = "sys_platform != 'linux'", specifier = ">=2.11" },
+    { name = "torch", marker = "sys_platform == 'linux'", specifier = ">=2.11", index = "https://download.pytorch.org/whl/cu126" },
 ]
 
 [[package]]
