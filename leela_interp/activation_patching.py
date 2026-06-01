@@ -5,7 +5,7 @@ Usage:
 
 Metrics: KL divergence + log-odds reduction of correct move.
 """
-import pickle, warnings, argparse, sys, numpy as np, torch, matplotlib.pyplot as plt
+import pickle, warnings, argparse, sys, numpy as np, torch, matplotlib.pyplot as plt, chess
 from tqdm import tqdm
 
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -13,7 +13,7 @@ warnings.filterwarnings("ignore", category=UserWarning)
 sys.path.insert(0, "leela_pytorch_impl")
 from model import Lc0Model
 from leela_board import LeelaBoard
-from utils import sq2idx
+from utils import sq2idx, idx2sq
 
 N_PUZZLES = 50
 N_LAYERS = 15
@@ -37,7 +37,7 @@ def log_odds_reduction(clean_logits, patched_logits, correct_idx):
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--model", default="leela_pytorch_impl/lc0.onnx")
-    p.add_argument("--device", default="cpu")
+    p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--n-puzzles", type=int, default=N_PUZZLES)
     p.add_argument("--patch-what", default="attn_skip",
                    choices=["ffn_skip", "attn_skip", "ln2"],
@@ -108,12 +108,18 @@ def main():
     N_VALID = sum(1 for n in valid_names if n is not None)
     print(f"Patching at {N_VALID} layers (patch_what={args.patch_what})")
 
-    # --- Run patching (two conditions: move squares vs random square) ---
+    model_name = args.model.split("/")[-1].replace(".onnx", "")
+
+    # --- Run patching (four conditions: top move target, PV 3rd move target, random, corrupted s) ---
     results_move = {i: [] for i in range(len(valid_names))}
     results_random = {i: [] for i in range(len(valid_names))}
+    results_third = {i: [] for i in range(len(valid_names))}
+    results_corrupted = {i: [] for i in range(len(valid_names))}
     # Also track log-odds reduction
     lodds_move = {i: [] for i in range(len(valid_names))}
     lodds_random = {i: [] for i in range(len(valid_names))}
+    lodds_third = {i: [] for i in range(len(valid_names))}
+    lodds_corrupted = {i: [] for i in range(len(valid_names))}
 
     for row, base_kl in tqdm(selected, desc="Puzzles"):
         cb = LeelaBoard.from_fen(row["FEN"])
@@ -134,10 +140,33 @@ def main():
         # Get the correct move index (model's top move on clean position)
         correct_idx = clean_logits.argmax().item()
 
-        # Pick a random square that is NOT the target
+        # Get the 3rd move target from the puzzle's principal_variation
+        # (the 3rd ply in the solution sequence = 2nd correct move by first player)
+        pv = row["principal_variation"]
+        if len(pv) >= 3:
+            third_uci = pv[2]  # 3rd move in the solution sequence
+            third_to_sq = sq2idx(third_uci[2:4], cb.pc_board.turn)
+            third_squares = [third_to_sq]
+        else:
+            third_squares = move_squares  # fallback if PV is too short
+
+        # Find squares that differ between clean and corrupted FEN
+        corrupted_sqs = []
+        for sq_idx in range(64):
+            sq_name = idx2sq(sq_idx, cb.pc_board.turn)
+            file = ord(sq_name[0]) - ord('a')
+            rank = int(sq_name[1]) - 1
+            chess_sq = chess.square(file, rank)
+            if cb.pc_board.piece_at(chess_sq) != crb.pc_board.piece_at(chess_sq):
+                corrupted_sqs.append(sq_idx)
+        if not corrupted_sqs:
+            corrupted_sqs = [to_sq]  # fallback
+
+        # Pick a random square that is NOT any target or corrupted square
         all_squares = list(range(64))
-        candidates = [s for s in all_squares if s != to_sq]
-        random_sq = [int(np.random.choice(candidates))]
+        exclude = {to_sq, third_squares[0]} | set(corrupted_sqs)
+        candidates = [s for s in all_squares if s not in exclude]
+        random_sq = [int(np.random.choice(candidates))] if candidates else [to_sq]
 
         # --- Capture corrupted activations (once for all layers) ---
         corrupted_acts = {}
@@ -154,13 +183,17 @@ def main():
         for h in hooks:
             h.remove()
 
-        # --- Patch each layer with BOTH move squares and random square ---
+        # --- Patch each layer with ALL THREE conditions ---
         for layer_idx, layer_name in enumerate(valid_names):
             if layer_name is None or layer_name not in corrupted_acts:
                 results_move[layer_idx].append(np.nan)
                 results_random[layer_idx].append(np.nan)
+                results_third[layer_idx].append(np.nan)
+                results_corrupted[layer_idx].append(np.nan)
                 lodds_move[layer_idx].append(np.nan)
                 lodds_random[layer_idx].append(np.nan)
+                lodds_third[layer_idx].append(np.nan)
+                lodds_corrupted[layer_idx].append(np.nan)
                 continue
 
             corr_act = corrupted_acts[layer_name]
@@ -189,18 +222,42 @@ def main():
             results_random[layer_idx].append(kl_divergence(clean_logits, patched_out[0][0]))
             lodds_random[layer_idx].append(log_odds_reduction(clean_logits, patched_out[0][0], correct_idx))
 
-    # --- Plot both conditions ---
+            # --- 3rd move target square patch ---
+            h = mod.register_forward_hook(make_patch_hook(corr_act, third_squares))
+            with torch.no_grad():
+                patched_out = inner(ci)
+            h.remove()
+            results_third[layer_idx].append(kl_divergence(clean_logits, patched_out[0][0]))
+            lodds_third[layer_idx].append(log_odds_reduction(clean_logits, patched_out[0][0], correct_idx))
+
+            # --- Corrupted squares patch ---
+            h = mod.register_forward_hook(make_patch_hook(corr_act, corrupted_sqs))
+            with torch.no_grad():
+                patched_out = inner(ci)
+            h.remove()
+            results_corrupted[layer_idx].append(kl_divergence(clean_logits, patched_out[0][0]))
+            lodds_corrupted[layer_idx].append(log_odds_reduction(clean_logits, patched_out[0][0], correct_idx))
+
+    # --- Plot all four conditions ---
     label_idx = 0
     labels = []
     move_means, move_stds = [], []
     rand_means, rand_stds = [], []
+    third_means, third_stds = [], []
+    corr_means, corr_stds = [], []
     lodd_move_means, lodd_move_stds = [], []
     lodd_rand_means, lodd_rand_stds = [], []
+    lodd_third_means, lodd_third_stds = [], []
+    lodd_corr_means, lodd_corr_stds = [], []
     for i, name in enumerate(valid_names):
         move_vals = [v for v in results_move[i] if not np.isnan(v)]
         rand_vals = [v for v in results_random[i] if not np.isnan(v)]
+        third_vals = [v for v in results_third[i] if not np.isnan(v)]
+        corr_vals = [v for v in results_corrupted[i] if not np.isnan(v)]
         lodd_mv = [v for v in lodds_move[i] if not np.isnan(v)]
         lodd_rv = [v for v in lodds_random[i] if not np.isnan(v)]
+        lodd_tv = [v for v in lodds_third[i] if not np.isnan(v)]
+        lodd_cv = [v for v in lodds_corrupted[i] if not np.isnan(v)]
         if move_vals:
             if name is not None and "attn_body" in name:
                 labels.append("embed+FFN")
@@ -214,12 +271,19 @@ def main():
             move_stds.append(np.std(move_vals))
             rand_means.append(np.mean(rand_vals))
             rand_stds.append(np.std(rand_vals))
+            third_means.append(np.mean(third_vals))
+            third_stds.append(np.std(third_vals))
+            corr_means.append(np.mean(corr_vals))
+            corr_stds.append(np.std(corr_vals))
             lodd_move_means.append(np.mean(lodd_mv))
             lodd_move_stds.append(np.std(lodd_mv))
             lodd_rand_means.append(np.mean(lodd_rv))
             lodd_rand_stds.append(np.std(lodd_rv))
+            lodd_third_means.append(np.mean(lodd_tv))
+            lodd_third_stds.append(np.std(lodd_tv))
+            lodd_corr_means.append(np.mean(lodd_cv))
+            lodd_corr_stds.append(np.std(lodd_cv))
 
-    model_name = args.model.split("/")[-1].replace(".onnx", "")
     xs = np.arange(len(move_means))
 
     # --- Two subplots: KL and Log-Odds Reduction ---
@@ -227,7 +291,13 @@ def main():
 
     # === Top: KL Divergence ===
     ax1.errorbar(xs, move_means, yerr=move_stds, marker="o", capsize=4, linewidth=2,
-                 markersize=6, color="#2196F3", ecolor="#90CAF9", label="Target square")
+                 markersize=6, color="#2196F3", ecolor="#90CAF9", label="Top move target")
+    ax1.errorbar(xs, third_means, yerr=third_stds, marker="D", capsize=4, linewidth=2,
+                 markersize=6, color="#9C27B0", ecolor="#CE93D8", linestyle="-.",
+                 label="PV 3rd move target")
+    ax1.errorbar(xs, corr_means, yerr=corr_stds, marker="^", capsize=4, linewidth=2,
+                 markersize=6, color="#E91E63", ecolor="#F48FB1", linestyle=":",
+                 label="Corrupted square(s)")
     ax1.errorbar(xs, rand_means, yerr=rand_stds, marker="s", capsize=4, linewidth=2,
                  markersize=6, color="#FF9800", ecolor="#FFCC80", linestyle="--",
                  label="Random square")
@@ -244,7 +314,13 @@ def main():
 
     # === Bottom: Log-Odds Reduction ===
     ax2.errorbar(xs, lodd_move_means, yerr=lodd_move_stds, marker="o", capsize=4, linewidth=2,
-                 markersize=6, color="#4CAF50", ecolor="#A5D6A7", label="Target square")
+                 markersize=6, color="#4CAF50", ecolor="#A5D6A7", label="Top move target")
+    ax2.errorbar(xs, lodd_third_means, yerr=lodd_third_stds, marker="D", capsize=4, linewidth=2,
+                 markersize=6, color="#9C27B0", ecolor="#CE93D8", linestyle="-.",
+                 label="PV 3rd move target")
+    ax2.errorbar(xs, lodd_corr_means, yerr=lodd_corr_stds, marker="^", capsize=4, linewidth=2,
+                 markersize=6, color="#E91E63", ecolor="#F48FB1", linestyle=":",
+                 label="Corrupted square(s)")
     ax2.errorbar(xs, lodd_rand_means, yerr=lodd_rand_stds, marker="s", capsize=4, linewidth=2,
                  markersize=6, color="#FF9800", ecolor="#FFCC80", linestyle="--",
                  label="Random square")
@@ -267,11 +343,14 @@ def main():
     plt.savefig(out_path, dpi=150, bbox_inches="tight")
     print(f"\nPlot saved to {out_path}")
 
-    print(f"\n{'Layer':<12} {'KL move':>8} {'KL rand':>8} {'Δ KL':>8}  |  {'LoR move':>8} {'LoR rand':>8} {'Δ LoR':>8}")
-    print("-" * 75)
+    print(f"\n{'Layer':<12} {'KL top':>8} {'KL 3rd':>8} {'KL corr':>8} {'KL rand':>8} {'Δ top':>8}  |  "
+          f"{'LoR top':>8} {'LoR 3rd':>8} {'LoR corr':>8} {'LoR rand':>8} {'Δ top':>8}")
+    print("-" * 115)
     for i, label in enumerate(labels):
-        print(f"{label:<12} {move_means[i]:8.4f} {rand_means[i]:8.4f} {move_means[i]-rand_means[i]:8.4f}  |  "
-              f"{lodd_move_means[i]:8.4f} {lodd_rand_means[i]:8.4f} {lodd_move_means[i]-lodd_rand_means[i]:8.4f}")
+        print(f"{label:<12} {move_means[i]:8.4f} {third_means[i]:8.4f} {corr_means[i]:8.4f} {rand_means[i]:8.4f} "
+              f"{move_means[i]-rand_means[i]:8.4f}  |  "
+              f"{lodd_move_means[i]:8.4f} {lodd_third_means[i]:8.4f} {lodd_corr_means[i]:8.4f} {lodd_rand_means[i]:8.4f} "
+              f"{lodd_move_means[i]-lodd_rand_means[i]:8.4f}")
 
     plt.show()
 

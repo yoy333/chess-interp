@@ -67,28 +67,38 @@ class Lc0Model(torch.nn.Module):
 
         self._lc0_model = onnx2torch.convert(onnx_model)
 
-        # Auto-detect model architecture from the converted model.
+        # Auto-detect model architecture from the ONNX weights.
+        # onnx2torch wraps weights in modules that don't expose them as nn.Parameter,
+        # so we read D_MODEL directly from the ONNX graph initializers.
         n_initializers = _count_onnx_initializers(self._lc0_model)
-        has_smolgen = hasattr(self._lc0_model, "encoder0/smolgen/compress")
-        self._is_bt4 = has_smolgen
 
-        # Detect D_MODEL from the first encoder's Q weight shape.
-        # For BT4: encoder0/mha/Q/w has shape (D_MODEL, D_MODEL)
-        # For original: similar naming
-        q_weight_name = "encoder0/mha/Q/w"
-        if hasattr(self._lc0_model, q_weight_name):
-            q_module = getattr(self._lc0_model, q_weight_name)
-            # onnx2torch wraps weights; find the weight tensor
-            for param in q_module.parameters():
-                self.D_MODEL = param.shape[0]
-                self.N_HEADS = 32 if has_smolgen else 24
+        # Read D_MODEL from the first encoder's Q weight in the ONNX graph.
+        d_model = None
+        q_init_name = "/encoder0/mha/Q/w/w"  # onnx2torch naming convention
+        for init in onnx_model.graph.initializer:
+            if init.name == q_init_name or init.name.endswith("encoder0/mha/Q/w/w"):
+                d_model = init.dims[0]
                 break
-            else:
-                self.D_MODEL = 1024 if has_smolgen else 768
-                self.N_HEADS = 32 if has_smolgen else 24
+        # Fallback: try checking the converted model's initializers
+        if d_model is None:
+            for i in range(n_initializers):
+                t = getattr(self._lc0_model.initializers, f"onnx_initializer_{i}", None)
+                if isinstance(t, torch.Tensor) and t.ndim == 2 and t.shape[0] == t.shape[1]:
+                    if t.shape[0] in (768, 1024):
+                        d_model = t.shape[0]
+                        break
+
+        if d_model is not None:
+            self.D_MODEL = d_model
+            self.N_HEADS = d_model // 32  # head_dim is always 32 for standard lc0
         else:
-            self.D_MODEL = 1024 if has_smolgen else 768
-            self.N_HEADS = 32 if has_smolgen else 24
+            # Last resort fallback (shouldn't happen)
+            self.D_MODEL = 768
+            self.N_HEADS = 24
+
+        # BT4 has D_MODEL=1024; original T78 has D_MODEL=768
+        has_smolgen = hasattr(self._lc0_model, "encoder0/smolgen/compress")
+        self._is_bt4 = self.D_MODEL == 1024
 
         print(f"Detected model: D_MODEL={self.D_MODEL}, N_HEADS={self.N_HEADS}, "
               f"Smolgen={has_smolgen}, Initializers={n_initializers}")
