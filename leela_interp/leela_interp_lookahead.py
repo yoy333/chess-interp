@@ -106,9 +106,6 @@ board = LeelaBoard.from_fen(fen)
 # %%
 item
 
-# %%
-board
-
 
 # %%
 def get_nth_move(board: LeelaBoard, n:int):
@@ -127,14 +124,6 @@ def get_nth_move(board: LeelaBoard, n:int):
     
     return lookahead
 
-
-# %%
-copy = board.copy()
-copy.push_uci(item['Moves'].split(' ')[0])
-# copy
-
-# %%
-policy, wld , mlh  = lc0.play(board)
 
 # %%
 print("2. Extract Boards and Labels (Balanced)")
@@ -361,141 +350,3 @@ with torch.no_grad():
         total += 1
 
 print(f"Accuracy: {correct/total:.4f} ({correct}/{total})")
-
-# %% [markdown]
-# ## Visualization
-#
-# Finally, we visualize the probe's predictions on a sample of the unseen test set natively in the notebook. This compares the actual board position directly against the prediction class from our Logistic Regression logic. Red text indicates an error, while green indicates correct classification.
-
-# %%
-from IPython.display import display, HTML
-import chess.svg
-
-print("Visualizing probe predictions on TEST SET...")
-
-try:
-    # Get the probability that the position is in check (class 1) from the test set
-    probs = probe.predict_proba(X_test)[:, 1]
-
-    # Find some indices to plot (within the test set arrays)
-    test_in_check_idx = np.where(y_test == 1)[0][:5]
-    test_not_in_check_idx = np.where(y_test == 0)[0][:5]
-
-    html_out = "<div style='display: flex; flex-direction: column; gap: 20px;'>"
-
-    def render_group(test_indices, title):
-        html = f"<h3>{title}</h3><div style='display: flex; flex-wrap: wrap; gap: 15px;'>"
-        for t_idx in test_indices:
-            # Map back to the original index in `boards`
-            orig_idx = idx_test[t_idx] 
-            
-            board = boards[orig_idx].pc_board
-            prob = probs[t_idx]
-            
-            # Color the probability green if correct, red if incorrect
-            is_correct = (prob > 0.5 and y_test[t_idx] == 1) or (prob <= 0.5 and y_test[t_idx] == 0)
-            color = "green" if is_correct else "red"
-            
-            svg = chess.svg.board(board, size=200)
-            html += f"""
-            <div style="border: 1px solid #ccc; padding: 10px; border-radius: 8px; text-align: center; background: white; color: black;">
-                {svg}
-                <div style="margin-top: 10px; font-family: sans-serif;">
-                    <b>Prob (has_passed_pawn):</b> <span style="color: {color}">{prob:.1%}</span><br/>
-                    <b>True Label:</b> {bool(y_test[t_idx])}
-                </div>
-            </div>
-            """
-        html += "</div>"
-        return html
-
-    html_out += render_group(test_in_check_idx, "5 Test Positions IN CLASS")
-    html_out += render_group(test_not_in_check_idx, "5 Test Positions NOT IN CLASS")
-    html_out += "</div>"
-
-    display(HTML(html_out))
-
-except NameError as e:
-    print(f"Error: Make sure you ran the previous training cell first. ({e})")
-
-# %% [markdown]
-# ## Visualizing Attention Outputs
-#
-# TODO: VISUALIZE ATTENTION FOR THE PAWNS THAT ARE PASSED
-#
-# Here we extract the inner attention matrices from Leela's ONNX-converted Transformer layer using `nnsight`. Since King safety is directly correlated to the concept of check, we map how much the `King` query token attends to other pieces (keys) on the board!
-
-# %%
-from IPython.display import display, HTML
-
-# Define available layers and heads in the model
-AVAILABLE_ATTENTION = {
-    "layers": [f"encoder{i}" for i in range(10)], # encoder0 up to encoder9
-    "heads": list(range(24)),
-    "description": "24 heads per layer across 10 encoder layers."
-}
-
-def plot_attention_for_square(board_idx, query_square, layer_name="encoder7", head_idx=None):
-    """
-    Extracts and visualizes the attention weights for a given square on the board.
-    If head_idx is None, averages across all 24 heads.
-    """
-    board_demo = boards[board_idx]
-    
-    # Forward pass on ONE board
-    single_input = inputs[board_idx:board_idx+1]
-    
-    with nnsight_model.trace(single_input) as tracer:
-        # Construct module path dynamically
-        module_path = f"{layer_name}/mha/QK/softmax"
-        layer = getattr(nnsight_model._lc0_model, module_path)
-        attn_out = layer.output.save()
-        
-    weights = attn_out if isinstance(attn_out, torch.Tensor) else attn_out.value 
-    weights = weights[0].cpu().numpy() # [24, 64, 64]
-    
-    if head_idx is None:
-        mean_attn = weights.mean(axis=0)[query_square] # average across all 24 heads
-    else:
-        mean_attn = weights[head_idx][query_square] # specific head
-
-    # Normalize between 0 and 1 so it fits a color scale smoothly
-    min_val, max_val = mean_attn.min(), mean_attn.max()
-    norm_attn = (mean_attn - min_val) / (max_val - min_val + 1e-9)
-
-    colors = {}
-    for sq in range(64):
-        val = float(norm_attn[sq])
-        # White to Red heatmap background
-        color_hex = f"#{int(255):02x}{int(255*(1-val)):02x}{int(255*(1-val)):02x}"
-        colors[sq] = color_hex
-
-    svg = chess.svg.board(
-        board_demo.pc_board,
-        fill=colors,
-        size=400
-    )
-
-    # Put a nice title above
-    head_title = "Average across all 24 heads" if head_idx is None else f"Head {head_idx}"
-    html_out = f"<h3>Attention Map: {layer_name}, {head_title} | Query square: {chess.square_name(query_square).upper()}</h3>"
-    html_out += svg
-    display(HTML(html_out))
-
-print(f"Available layers to choose from: {AVAILABLE_ATTENTION['layers']}")
-print(f"Available heads to choose from: {AVAILABLE_ATTENTION['heads'][0]} to {AVAILABLE_ATTENTION['heads'][-1]}")
-
-# %%
-demo_board_indices = [idx_test[t_idx] for t_idx in test_in_check_idx]
-demo_idx = next(
-    (board_idx for board_idx in demo_board_indices if boards[board_idx].pc_board.turn == chess.WHITE),
-    demo_board_indices[0] # fallback
-)
-
-print("Visualizing White King query:")
-w_king_sq = boards[demo_idx].pc_board.king(chess.WHITE)
-plot_attention_for_square(demo_idx, w_king_sq, layer_name="encoder7", head_idx=None)
-
-print("\nVisualizing Black King query (on the same board):")
-b_king_sq = boards[demo_idx].pc_board.king(chess.BLACK)
-plot_attention_for_square(demo_idx, b_king_sq, layer_name="encoder7", head_idx=None)
