@@ -15,6 +15,7 @@ dependencies = [
     "iceberg>=0.4",
     "ipykernel>=7.2.0",
     "ipywidgets>=8.1.8",
+    "leela-pytorch-impl",
     "llama-cpp-python>=0.3.23",
     "matplotlib>=3.10.9",
     "nbstripout>=0.9.1",
@@ -50,3 +51,23 @@ torch = [
 torchvision = [
     { index = "torch-cu126", marker = "sys_platform == 'linux'" },
 ]
+leela-pytorch-impl = { workspace = true, editable = true }
+
+[tool.uv.workspace]
+# members = [
+#     "leela_pytorch_impl",
+# ]
+
+[tool.basedpyright]
+extraPaths = [
+    "leela_pytorch_impl"
+]
+reportUnusedImport = false
+reportUnusedClass = false
+reportUnusedFunction = false
+reportUnusedExpression = false
+reportMissingTypeStubs = false
+reportUnusedCallResult = false
+reportUnknownVariableType = false
+
+typeCheckingMode = "off"
