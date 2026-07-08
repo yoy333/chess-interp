@@ -54,9 +54,9 @@ torchvision = [
 leela-pytorch-impl = { workspace = true, editable = true }
 
 [tool.uv.workspace]
-# members = [
-#     "leela_pytorch_impl",
-# ]
+members = [
+    "leela_pytorch_impl",
+]
 
 [tool.basedpyright]
 extraPaths = [

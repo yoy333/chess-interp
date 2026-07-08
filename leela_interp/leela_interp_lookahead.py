@@ -51,8 +51,8 @@ from model import Lc0Model
 from leela_board import LeelaBoard
 import torch
 import numpy as np
-from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import train_test_split, cross_val_score
+# from sklearn.linear_model import LogisticRegression
+# from sklearn.model_selection import train_test_split, cross_val_score
 
 # %%
 ONNX_MODEL_NAME = 'lc0.onnx'
@@ -77,7 +77,7 @@ login(token=os.getenv("HUGGINGFACE_TOKEN"))
 # We will use a sample chess dataset to run our first probe on the model
 
 # %%
-from datasets import load_dataset
+from datasets import IterableDataset, iterable_dataset, load_dataset
 
 print("1. Load actual dataset (streaming)")
 try:
@@ -93,7 +93,7 @@ except Exception as e:
 
 # %%
 import chess
-def get_nth(iterable, n, default=None):
+def get_nth(iterable:IterableDataset, n:int, default=None):
     for i, x in enumerate(iterable):
         if i == n:
             return x
@@ -106,24 +106,8 @@ board = LeelaBoard.from_fen(fen)
 # %%
 item
 
-
 # %%
-def get_nth_move(board: LeelaBoard, n:int):
-    lookahead = board.copy()
-    # Policy, Win-Loss-Draw, Moves Left Ahead
-    for i in range(n) :
-        policy, wld, mlh = lc0.play(lookahead)
-        # top_moves returns a dictionary of <moves, probabilities>, we only want the keys
-        top_moves = list(lc0.top_moves(lookahead, policy).keys())
-        # presumably this means there are no more moves to make
-        if len(top_moves) == 0:
-            return None
-             
-        best_move = top_moves[0]
-        lookahead.push_uci(best_move)
-    
-    return lookahead
-
+board
 
 # %%
 print("2. Extract Boards and Labels (Balanced)")
@@ -131,8 +115,6 @@ boards = []
 num_boards = 0
 
 target_num = 1000
-
-baseline = LeelaBoard()
 
 # These arrays will contain a number 0-63 that represent a square on the chessboard
 first_source_indexes = np.zeros(target_num, dtype=int)
@@ -168,8 +150,8 @@ for i, item in enumerate(data):
     # We consider this the first real move.
     # This is the first move that a player would have to find
     first_uci = moves[1]
-    first_source_indexes[num_boards] = baseline.sq2idx(first_uci[0:2])
-    first_target_indexes[num_boards] = baseline.sq2idx(first_uci[2:4])
+    first_source_indexes[num_boards] = board.sq2idx(first_uci[0:2])
+    first_target_indexes[num_boards] = board.sq2idx(first_uci[2:4])
 
     # in the case where the game should end before lookahead don't include
     try:
@@ -178,8 +160,8 @@ for i, item in enumerate(data):
         print(moves[2])
         continue
     
-    lookahead_source_indexes[num_boards] = baseline.sq2idx(lookahead_uci[0:2])
-    lookahead_target_indexes[num_boards] = baseline.sq2idx(lookahead_uci[2:4])
+    lookahead_source_indexes[num_boards] = board.sq2idx(lookahead_uci[0:2])
+    lookahead_target_indexes[num_boards] = board.sq2idx(lookahead_uci[2:4])
 
     num_boards += 1
 
@@ -215,7 +197,6 @@ nnsight_model = NNsight(lc0)
 with nnsight_model.trace(inputs) as tracer:
     # Grab the output of the residual stream
     hidden_states = nnsight_model._lc0_model.post_mlp[LAYER_TO_PROBE].output.save()
-    
 
 print("Extracting features")
 X_activations = hidden_states if isinstance(hidden_states, torch.Tensor) else hidden_states.value
@@ -244,10 +225,10 @@ for name, module in lc0.named_modules():
 with nnsight_model.trace(inputs) as tracer:
     # Grab the output of the residual stream
     step = getattr(nnsight_model._lc0_model, 'encoder10/mha/Q/w')
-    hidden_states = step.output.save()
+    attn_states = step.output.save()
 
-print(hidden_states)
-print(f"shape: {hidden_states.shape}")
+print(attn_states)
+print(f"shape: {attn_states}")
 
 # %% [markdown]
 # shape is of the form [BATCH_SIZE * 64, H_DIM]
@@ -263,7 +244,7 @@ import torch
 import torch.nn as nn
 
 class BilinearProbe(nn.Module):
-    def __init__(self, d_attn, d_h):
+    def __init__(self, d_attn, d_h, num_squares = 64):
         """
         d_attn: 64  — attention/bottleneck dimension (also num squares)
         d_h:   768  — hidden state dimension
@@ -271,82 +252,137 @@ class BilinearProbe(nn.Module):
         super().__init__()
         self.U = nn.Parameter(torch.randn(d_attn, d_h) * 0.01)  # (64, 768)
         self.V = nn.Parameter(torch.randn(d_attn, d_h) * 0.01)  # (64, 768)
-        self.c = nn.Parameter(torch.zeros(d_attn))              # (64,)
+        self.c = nn.Parameter(torch.zeros(num_squares))              # (64,)
 
     def forward(self, h_y_all, h_t1):
         """
-        h_y_all: (d_attn, d_h)  — h^L for each candidate square y
-        h_t1:    (d_h,)     — h^L at position t1
-        Returns:  (d_attn,)     — one logit per square, ready to softmax
+        h_y_all: (B, num_sqaures, d_h)  — h^L for each candidate square y
+        h_t1:    (B, d_h)     — h^L at position t1
+        Returns:  (B, num_squares)     — one logit per square, ready to softmax
         """
-        # U h_y^T -> (64, 64): project each candidate square
-        Uh = h_y_all @ self.U.T      # (64, 768) @ (768, 64) -> (64, 64)
+        # Project candidate squares: (B, num_squares, d_h) @ (d_h, d_attn) -> (B, num_squares, d_attn)
+        Uh = h_y_all @ self.U.T
 
-        # V h_t1 -> (64,): project the conditioning token
-        Vh = self.V @ h_t1           # (64, 768) @ (768,) -> (64,)
+        # Project conditioning token: (B, d_h) @ (d_h, d_attn) -> (B, d_attn)
+        Vh = h_t1 @ self.V.T
 
-        # bilinear scores: each row of Uh dotted with Vh
-        logits = Uh @ Vh + self.c    # (64, 64) @ (64,) -> (64,) + (64,)
-
+        # (B, num_sqaures, d_attn) @ (B, d_attn, 1) -> (B, num_squares, 1) -> (B, num_sqaures)
+        logits = (Uh @ Vh.unsqueeze(-1))\
+        .squeeze(-1) + self.c
         return logits
     
     def predict(self, h_y_all, h_t1):
+        """
+        Same input shapes as forward(). Returns (B, d_attn) softmax probabilities
+        (or (d_attn,) if the inputs were unbatched).
+        """
         logits = self.forward(h_y_all, h_t1)
-        return torch.softmax(logits, dim=0)
+        probs = torch.softmax(logits, dim=-1)
+        return probs
 
 
 # %%
-probe = BilinearProbe(d_attn=64, d_h=768)
-optimizer = torch.optim.Adam(probe.parameters(), lr=1e-3)
-loss_fn = nn.CrossEntropyLoss()  # expects raw logits, applies softmax internally
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import TensorDataset, DataLoader
 
-def train_step(h_y_all, h_t1_batch, t3_labels):
-    """
-    h_y_all:     (64, 768)  — fixed, the h^L for each square
-    h_t1_batch:  (batch, 768)  — h^L at t1 for each game in the batch
-    t3_labels:   (batch,)   — ground truth target square index (0-63)
-    """
-    probe.train()
-    optimizer.zero_grad()
+# ---- Config ----
+d_attn = 32
+d_h = 768
+num_squares = 64
+batch_size = 32
+num_epochs = 5
+lr = 1e-2
+weight_decay = 0
+val_split = 0.3
 
-    # run probe for each item in batch
-    logits = torch.stack([
-        probe(h_y_all, h_t1) for h_t1 in h_t1_batch
-    ])  # (batch, 64)
-
-    loss = loss_fn(logits, t3_labels)
-    loss.backward()
-    optimizer.step()
-    return loss.item()
-
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 labels_torch = torch.from_numpy(labels)
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-print("gpu available" if torch.cuda.is_available() else "No gpu")
-print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else "No GPU")
+# ---- Data ----
+# X_activations: (N, num_squares, d_hidden)
+optimizer = optimizer,
+# first_target_h: (N, d_hidden)
+# labels_torch: (N,) — long tensor of correct square index
 
-first_target_h = first_target_h.to(device)
-labels_torch = labels_torch.to(device)
-X_activations = X_activations.to(device)
-probe = probe.to(device)
+dataset = TensorDataset(X_activations, first_target_h, labels_torch)
 
-# training loop
-num_epochs = 100
+n_val = int(len(dataset) * val_split)
+n_train = len(dataset) - n_val
+train_set, val_set = torch.utils.data.random_split(dataset, [n_train, n_val])
+
+train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True)
+val_loader = DataLoader(val_set, batch_size=batch_size, shuffle=False)
+
+# ---- Model / Optimizer / Loss ----
+probe = BilinearProbe(d_attn=d_attn, d_h=d_h, num_squares=num_squares)#.to(device)
+optimizer = optim.AdamW(probe.parameters(), lr=lr, weight_decay=weight_decay)
+criterion = nn.CrossEntropyLoss()  # expects raw logits + integer class labels
+
+# deepspeed
+import deepspeed
+model_engine, optimizer, dataloader, _ = deepspeed.initialize(
+  model=probe,
+  model_parameters=probe.parameters(),
+  config="ds_config.json",
+  optimizer = optimizer,
+)
+
+def evaluate(model_engine, loader):
+  model_engine.eval()
+  total_loss, correct, total = 0.0, 0, 0
+  with torch.no_grad():
+    for h_y_all, h_t1, labels in loader:
+      d = model_engine.device
+      h_y_all, h_t1, labels = h_y_all.to(d), h_t1.to(d), labels.to(d)
+
+      logits = model_engine(h_y_all, h_t1)
+      loss = criterion(logits, labels)
+      total_loss += loss.item() * labels.size(0)
+      preds = logits.argmax(dim=-1)
+      correct += (preds == labels).sum().item()
+      total += labels.size(0)
+  return total_loss / total, correct / total
+
 for epoch in range(num_epochs):
-    for i in range(num_boards//5):
-        loss = train_step(X_activations[i], first_target_h, labels_torch)
-    print(f"Epoch {epoch}, Loss: {loss:.4f}")
+  probe.train()
+  running_loss, correct, total = 0.0, 0, 0
+
+  for h_y_all, h_t1, labels in train_loader:
+    d = model_engine.device
+    h_y_all = h_y_all.to(d)      # (B, num_squares, d_h)
+    h_t1 = h_t1.to(d)            # (B, d_h)
+    labels = labels.to(d)        # (B,)
+
+    logits = model_engine(h_y_all, h_t1)     # (B, num_squares)
+    loss = criterion(logits, labels)
+    model_engine.backward(loss)
+    model_engine.step()
+
+    running_loss += loss.item() * labels.size(0)
+    preds = logits.argmax(dim=-1)
+    correct += (preds == labels).sum().item()
+    total += labels.size(0)
+
+  train_loss = running_loss / total
+  train_acc = correct / total
+  val_loss, val_acc = evaluate(probe, val_loader)
+
+  print(f"Epoch {epoch+1:02d} | "
+        f"train_loss={train_loss:.4f} train_acc={train_acc:.4f} | "
+        f"val_loss={val_loss:.4f} val_acc={val_acc:.4f}")
 
 # %%
-probe.eval()
-correct = 0
-total = 0
-
-with torch.no_grad():
-    for i in range(num_boards//5, num_boards):
-        probs = probe.predict(X_activations[i], first_target_h[i])  # (64,)
-        predicted = probs.argmax()
-        correct += (predicted == labels_torch[i]).item()
-        total += 1
-
-print(f"Accuracy: {correct/total:.4f} ({correct}/{total})")
+# probe.eval()
+# correct = 0
+# total = 0
+#
+# with torch.no_grad():
+#     for i in range(num_boards//5, num_boards):
+#         probs = probe.predict(X_activations[i], first_target_h[i])  # (64,)
+#         predicted = probs.argmax()
+#         correct += (predicted == labels_torch[i]).item()
+#         total += 1
+#
+# print(f"Accuracy: {correct/total:.4f} ({correct}/{total})")
