@@ -39,7 +39,7 @@ from pathlib import Path
 
 # Import modules from parent and sibling directories
 current_dir = Path.cwd().resolve()
-repo_root = current_dir.parent if current_dir.name == "leela_interp" else current_dir
+repo_root = current_dir.parent.parent if current_dir.name == "lookahead" else current_dir
 leela_pytorch_impl_dir = repo_root / "leela_pytorch_impl"
 
 for path in (repo_root, leela_pytorch_impl_dir):
@@ -317,7 +317,7 @@ val_loader = DataLoader(val_set, batch_size=batch_size, shuffle=False)
 
 # ---- Model / Optimizer / Loss ----
 probe = BilinearProbe(d_attn=d_attn, d_h=d_h, num_squares=num_squares)#.to(device)
-optimizer = optim.AdamW(probe.parameters(), lr=lr, weight_decay=weight_decay)
+optimizer_strat = optim.AdamW(probe.parameters(), lr=lr, weight_decay=weight_decay)
 criterion = nn.CrossEntropyLoss()  # expects raw logits + integer class labels
 
 # deepspeed
@@ -326,7 +326,7 @@ model_engine, optimizer, dataloader, _ = deepspeed.initialize(
   model=probe,
   model_parameters=probe.parameters(),
   config="ds_config.json",
-  optimizer = optimizer,
+  optimizer = optimizer_strat,
 )
 
 def evaluate(model_engine, loader):
