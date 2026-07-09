@@ -302,7 +302,6 @@ labels_torch = torch.from_numpy(labels)
 
 # ---- Data ----
 # X_activations: (N, num_squares, d_hidden)
-optimizer = optimizer,
 # first_target_h: (N, d_hidden)
 # labels_torch: (N,) — long tensor of correct square index
 
@@ -327,6 +326,7 @@ model_engine, optimizer, dataloader, _ = deepspeed.initialize(
   model_parameters=probe.parameters(),
   config="ds_config.json",
   optimizer = optimizer_strat,
+  training_data = train_loader,
 )
 
 def evaluate(model_engine, loader):
@@ -349,7 +349,7 @@ for epoch in range(num_epochs):
   probe.train()
   running_loss, correct, total = 0.0, 0, 0
 
-  for h_y_all, h_t1, labels in train_loader:
+  for h_y_all, h_t1, labels in data_loader:
     d = model_engine.device
     h_y_all = h_y_all.to(d)      # (B, num_squares, d_h)
     h_t1 = h_t1.to(d)            # (B, d_h)
@@ -367,7 +367,7 @@ for epoch in range(num_epochs):
 
   train_loss = running_loss / total
   train_acc = correct / total
-  val_loss, val_acc = evaluate(probe, val_loader)
+  val_loss, val_acc = evaluate(model_engine, val_loader)
 
   print(f"Epoch {epoch+1:02d} | "
         f"train_loss={train_loss:.4f} train_acc={train_acc:.4f} | "
