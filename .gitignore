@@ -20,6 +20,9 @@ wandb/
 
 .env
 
+# lsp
+pyrightconfig.json
+
 # for Macs 
 .DS_Store
 

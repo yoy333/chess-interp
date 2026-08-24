@@ -71,3 +71,8 @@ reportUnusedCallResult = false
 reportUnknownVariableType = false
 
 typeCheckingMode = "off"
+
+venv = "chess-interp/.venv"
+exclude = [
+    ".venv"
+]
