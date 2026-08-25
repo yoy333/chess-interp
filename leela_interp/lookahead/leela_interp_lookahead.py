@@ -1,5 +1,8 @@
-from torch import float32
-training_dtype = float32
+from torch import float16
+training_dtype = float16
+
+# must be minimum 1
+LOOKAHEAD_NUM = 2
 
 def printonce(thing):
     from os import getenv
@@ -26,23 +29,60 @@ def loadDataset(name):
         printonce(f"Failed to load: {e}")
 
 
-def toDataset(rows_iter, num_samples=None):
-    """Materialize the next num_samples rows of an iterator into a Dataset.
+def makePuzzleFilter(lookahead_num=LOOKAHEAD_NUM, required_tags=("sacrifice",)):
+    """Build the predicate toDataset uses to decide whether a puzzle row is usable.
+
+    Returned closure is stateful: it remembers the FENs it has already accepted
+    so duplicate positions are dropped across the whole run, not just within a
+    single batch. Everything a downstream stage assumes about a row is checked
+    here, so generateActivations can treat every row it gets as known-good.
+    """
+    known_fens = set()
+
+    def keep(item):
+        fen = item.get("f", "")
+        if not fen or fen in known_fens:
+            return False
+
+        moves = item.get("m", "").split(" ")
+        # 1 because the puzzle must start with a move that is given to the
+        # player; *2 because a "move" is a pair of plies. The lookahead move
+        # has to actually exist in the line.
+        if len(moves) < 1 + lookahead_num * 2:
+            return False
+
+        tags = item.get("t", "").split(" ")
+        if any(tag not in tags for tag in required_tags):
+            return False
+
+        known_fens.add(fen)
+        return True
+
+    return keep
+
+
+def toDataset(rows_iter, num_samples=None, filter_fn=None):
+    """Materialize the next num_samples *usable* rows of an iterator into a Dataset.
 
     Takes an *iterator* rather than the dataset itself, deliberately: the
     iterator is created once and kept across batches, so each call consumes
     rows the previous call didn't see. Re-iterating the dataset instead would
     hand every batch the same rows from the head of the stream.
 
+    filter_fn(row) -> bool decides which rows count; rows it rejects are
+    consumed and discarded, so num_samples counts rows that survive the filter
+    rather than rows read. num_samples=None drains the iterator.
+
     Only one batch of rows is ever resident, which is also what keeps memory
-    flat as num_batches grows. num_samples=None drains the iterator.
+    flat as num_batches grows.
     """
     from itertools import islice
 
     from datasets import Dataset
 
-    printonce(f"1b. Materialize next {num_samples} rows into a Dataset")
-    rows = list(rows_iter if num_samples is None else islice(rows_iter, num_samples))
+    printonce(f"1b. Materialize next {num_samples} usable rows into a Dataset")
+    kept = rows_iter if filter_fn is None else filter(filter_fn, rows_iter)
+    rows = list(kept if num_samples is None else islice(kept, num_samples))
     if not rows:
         return None
     dataset = Dataset.from_list(rows)
@@ -97,27 +137,11 @@ def generateActivations(data, num_samples):
     lookahead_source_indexes = np.zeros(target_num, dtype=int)
     lookahead_target_indexes = np.zeros(target_num, dtype=int)
 
-    # must be minimum 1
-    LOOKAHEAD_NUM = 2
-
-    known_fens = set()
+    # Rows arrive pre-filtered by toDataset, so every row here is usable.
     for i, item in enumerate(data):
-        # fen = item.get('FEN', item.get('fen'))
-        fen = item.get("f", "")
-        if fen in known_fens:
-            continue;
-        else:
-            known_fens.add(fen)
-            
-        board = LeelaBoard.from_fen(fen)
+        board = LeelaBoard.from_fen(item["f"])
         # Ex: ["e2e4", "e7e5"]
         moves = item["m"].split(' ')
-        # moves = item['Moves'].split(' ')
-
-        # 1 because the puzzle must start with a move
-        # *2 because a "move" is a pair of moves
-        if len(moves)<1+LOOKAHEAD_NUM*2:
-            continue;
 
         # Puzzle data starts one move from the start of the puzzle
         # This move is given to the player. i.e. it is played by enemy
@@ -345,11 +369,8 @@ def main():
     import deepspeed
     import os
 
-    num_batches = 5
-    samples_per_epoch = 600
-    # generateActivations drops duplicate FENs and puzzles that are too short,
-    # so pull more rows than we actually need.
-    ROW_HEADROOM = 4
+    num_batches = 8
+    samples_per_epoch = 64*4
 
     d_attn = 32
     d_h = 768
@@ -382,7 +403,6 @@ def main():
         raise RuntimeError(
             f"samples_per_epoch={samples_per_epoch} is smaller than world_size={world_size}"
         )
-    rows_per_batch = samples_per_rank * ROW_HEADROOM
 
     # Split the puzzles across ranks *before* generating activations, so the
     # lc0 forward pass is parallelized too rather than every rank redundantly
@@ -397,15 +417,19 @@ def main():
     # did not consume.
     rows_iter = iter(puzzleShard)
 
+    # All the "is this puzzle usable" logic lives in one place; toDataset
+    # applies it while pulling rows so the batch it hands back is already clean.
+    puzzle_filter = makePuzzleFilter()
+
     printonce(
-        f"Streaming across {world_size} rank(s): {rows_per_batch} rows and "
-        f"{samples_per_rank} target samples per rank per batch, "
+        f"Streaming across {world_size} rank(s): "
+        f"{samples_per_rank} usable samples per rank per batch, "
         f"{num_batches} batches."
     )
 
     for batch in range(num_batches):
         printonce(f"=== Batch {batch+1}/{num_batches} ===")
-        puzzleData = toDataset(rows_iter, rows_per_batch)
+        puzzleData = toDataset(rows_iter, samples_per_rank, puzzle_filter)
 
         # A rank whose stream runs dry has to take every other rank down with
         # it, otherwise the survivors hang in train_batch's collectives.
