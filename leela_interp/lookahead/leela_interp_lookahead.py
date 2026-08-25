@@ -29,7 +29,7 @@ def loadDataset(name):
         printonce(f"Failed to load: {e}")
 
 
-def makePuzzleFilter(lookahead_num=LOOKAHEAD_NUM, required_tags=("sacrifice",)):
+def makePuzzleFilter(lookahead_num=LOOKAHEAD_NUM, required_tags=("sacrifice",), min_rating = 1500):
     """Build the predicate toDataset uses to decide whether a puzzle row is usable.
 
     Returned closure is stateful: it remembers the FENs it has already accepted
@@ -40,19 +40,24 @@ def makePuzzleFilter(lookahead_num=LOOKAHEAD_NUM, required_tags=("sacrifice",)):
     known_fens = set()
 
     def keep(item):
-        fen = item.get("f", "")
+        fen = item.get("FEN", "")
         if not fen or fen in known_fens:
             return False
 
-        moves = item.get("m", "").split(" ")
+        moves = item.get("Moves", "").split(" ")
         # 1 because the puzzle must start with a move that is given to the
         # player; *2 because a "move" is a pair of plies. The lookahead move
         # has to actually exist in the line.
         if len(moves) < 1 + lookahead_num * 2:
             return False
 
-        tags = item.get("t", "").split(" ")
+        tags = item.get("", "").split(" ")
         if any(tag not in tags for tag in required_tags):
+            return False
+
+        rating = item.get("Rating", 0)
+        printonce(rating)
+        if rating < min_rating:
             return False
 
         known_fens.add(fen)
@@ -139,9 +144,9 @@ def generateActivations(data, num_samples):
 
     # Rows arrive pre-filtered by toDataset, so every row here is usable.
     for i, item in enumerate(data):
-        board = LeelaBoard.from_fen(item["f"])
+        board = LeelaBoard.from_fen(item["FEN"])
         # Ex: ["e2e4", "e7e5"]
-        moves = item["m"].split(' ')
+        moves = item["Moves"].split(' ')
 
         # Puzzle data starts one move from the start of the puzzle
         # This move is given to the player. i.e. it is played by enemy
